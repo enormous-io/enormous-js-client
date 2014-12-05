@@ -1,23 +1,26 @@
+;
+
 var enormousSocket = null;
 
 function enormous(options) {
-    //var socketURL = "https://sockets.enormous.io:443",
-    //    ajaxEndpoint = 'https://enormous.io:443/apps/';
-    var socketURL = "http://localhost:3000",
-        ajaxEndpoint = 'http://localhost:3000/apps/';
+    options = options || {};
+    options.events = options.events || {};
+
+    var socketURL = "https://sockets.enormous.io:443";
+    //var socketURL = "http://localhost:3000";
 
     if (!enormousSocket)
         enormousSocket = io(socketURL);
 
-    this.clientID;
-    this.socket = enormousSocket;
-    this.debug = options.debug || false;
-
-    this.appKey = options.appKey;
-    this.basicAuthUsername = options.basicAuthUsername || false;
-    this.basicAuthPassword = options.basicAuthPassword || false;
-
     var self = this;
+
+    self.clientID = null;
+    self.socket = enormousSocket;
+    self.debug = options.debug || false;
+
+    self.appKey = options.appKey;
+    self.basicAuthUsername = options.basicAuthUsername || false;
+    self.basicAuthPassword = options.basicAuthPassword || false;
 
     var getRequestParameters = function (options) {
         options = options || {};
@@ -27,71 +30,95 @@ function enormous(options) {
         options.basicPassword = options.basicPassword || self.basicPassword;
 
         return options;
-    }
+    };
 
     enormousSocket
         .on('connecting', function () {
             if (self.debug)
                 console.info('Connecting to enormous', socketURL)
+
+            if(options.events.connecting)
+                options.events.connecting(self);
         })
         .on('connect', function () {
             if (self.debug)
                 console.info('Connected to enormous', socketURL)
+
+            if(options.events.connect)
+                options.events.connect(self);
         })
         .on('disconnect', function () {
             if (self.debug)
                 console.error('Disconnected from enormous', socketURL)
+
+            if(options.events.disconnected)
+                options.events.disconnected(self);
         })
         .on('connect_failed', function () {
             if (self.debug)
                 console.error('Connection to enormous failed', socketURL)
+
+            if(options.events.connect_failed)
+                options.events.connect_failed(self);
         })
         .on('reconnecting', function () {
             if (self.debug)
                 console.info('Reconnecting to enormous', socketURL)
+
+            if(options.events.reconnecting)
+                options.events.reconnecting(self);
         })
         .on('enormous_clientID', function (data) {
             self.clientID = data.clientID;
         });
 
-    this.executeMethod = function (options) {
-        options = getRequestParameters(options);
+    self.executeMethod = function (options, next) {
+        options = options || {};
 
-        var requestData,
-            params = options.params || false,
-            methodName = options.methodName,
-            onDataFunc = function (data) {
-                if (self.debug)
-                    console.info('Ajax data received for method: ' + methodName + '. Data: ', data);
+        next = next || options.onData || function () {
+        };
 
-                if (options.onData)
-                    options.onData(data);
-            };
+        var methodName = options.methodName || self.methodName,
+            auth,
+            params = options.params || false;
 
         if (options.auth) {
-            requestData = {
-                auth: options.auth,
-                params: params
-            }
-        } else {
-            requestData = params;
+            auth = options.auth;
+        } else if (params.auth) {
+            auth = params.auth;
+            params = params.params;
         }
 
-        $.ajax({
-            url: ajaxEndpoint + self.appKey + '/' + methodName,
-            data: requestData,
-            dataType: 'json',
-            beforeSend: function (xhr) {
-                if (self.basicAuthUsername && self.basicAuthPassword)
-                    xhr.setRequestHeader("Authorization", "Basic " + btoa(self.basicAuthUsername + ":" + self.basicAuthPassword));
-            },
-            success: onDataFunc
+        var watchMethodParams = {
+            apiKey: self.appKey,
+            methodName: methodName,
+            basicAuthUsername: self.basicAuthUsername,
+            basicAuthPassword: self.basicAuthPassword,
+            auth: auth,
+            params: params
+        };
+
+        enormousSocket.emit('executeMethod', watchMethodParams, function (data) {
+            if (self.debug)
+                console.info('Response from watchMethod request: ', data);
+
+            next(data);
+        });
+
+        enormousSocket.on("enormous_timestampHashUpdate", function (timestampUpdate) {
+            if (watchMethodParams.auth && timestampUpdate.requestData.apiKey === self.appKey) {
+                watchMethodParams.auth.timestamp = timestampUpdate.data.timestamp;
+                watchMethodParams.auth.timestampHash = timestampUpdate.data.timestampHash;
+
+                if (self.debug)
+                    console.info('Updating auth timestamp', timestampUpdate)
+            }
         });
 
         return self;
-    }
+    };
 
-    this.watchMethod = function (options, next) {
+    self.watchMethod = function (options, next) {
         options = options || {};
         next = next || function () {
         };
@@ -115,9 +142,9 @@ function enormous(options) {
                 options.onData(data);
             };
 
-        if(options.auth){
+        if (options.auth) {
             auth = options.auth;
-        }else if (params.auth) {
+        } else if (params.auth) {
             auth = params.auth;
             params = params.params;
         }
@@ -130,18 +157,18 @@ function enormous(options) {
             auth: auth,
             params: params,
             fetchInitialData: fetchDataOnInit
-        }
+        };
 
         enormousSocket.on('connect', function () {
             enormousSocket.emit('watchMethod', watchMethodParams, function (data) {
                 if (self.debug)
                     console.info('Response from watchMethod request: ', data);
 
-                 if(watchMethodParams.fetchInitialData) {
-                     onDataFunc(data)
+                if (watchMethodParams.fetchInitialData) {
+                    onDataFunc(data);
 
-                     watchMethodParams.fetchInitialData = false;
-                 }
+                    watchMethodParams.fetchInitialData = false;
+                }
 
                 next(data);
             });
@@ -154,15 +181,15 @@ function enormous(options) {
                 watchMethodParams.auth.timestamp = timestampUpdate.data.timestamp;
                 watchMethodParams.auth.timestampHash = timestampUpdate.data.timestampHash;
 
-                if(self.debug)
+                if (self.debug)
                     console.info('Updating auth timestamp', timestampUpdate)
             }
         });
 
         return self;
-    }
+    };
 
-    this.joinChannel = function (options, next) {
+    self.joinChannel = function (options, next) {
         next = next || function () {
         };
         options = getRequestParameters(options);
@@ -173,7 +200,7 @@ function enormous(options) {
             basicUsername: options.basicUsername,
             basicPassword: options.basicPassword,
             channel: options.channel
-        }
+        };
 
         enormousSocket.on('connect', function () {
             enormousSocket.emit('joinChannel', data, function (data) {
@@ -188,16 +215,16 @@ function enormous(options) {
                     data.auth.timestamp = timestampUpdate.data.timestamp;
                     data.auth.timestampHash = timestampUpdate.data.timestampHash;
 
-                    if(self.debug)
+                    if (self.debug)
                         console.info('Updating auth timestamp', timestampUpdate)
                 }
             });
         });
 
         return self;
-    }
+    };
 
-    this.leaveChannel = function (channel, next) {
+    self.leaveChannel = function (channel, next) {
         next = next || function () {
         };
 
@@ -211,9 +238,9 @@ function enormous(options) {
         });
 
         return self;
-    }
+    };
 
-    this.bindAction = function (channel, actionName, next) {
+    self.bindAction = function (channel, actionName, next) {
         enormousSocket.on(actionName, function (data) {
             if (!data.requestData || typeof data.requestData !== 'object')
                 return false;
@@ -237,7 +264,7 @@ function enormous(options) {
         });
 
         return self;
-    }
+    };
 
-    return this;
+    return self;
 }
